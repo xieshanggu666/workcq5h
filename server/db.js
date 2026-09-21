@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS scenes (
 CREATE TABLE IF NOT EXISTS scene_actions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   scene_id INTEGER NOT NULL,
-  device_key TEXT NOT NULL,   -- 目标设备（名称或类型），演示用名称
+  device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,  -- 稳定关联；设备删除后置空
+  device_key TEXT NOT NULL DEFAULT '',  -- 设备名称快照，仅用于展示
   action TEXT NOT NULL,       -- 如 开启/关闭/设为暖光
   order_no INTEGER NOT NULL DEFAULT 0
 );
@@ -56,6 +57,45 @@ CREATE TABLE IF NOT EXISTS energy (
   hour INTEGER NOT NULL    -- 0-23
 );
 `)
+
+// 迁移：旧版 scene_actions 只有 device_key（名称），重建为 device_id 稳定关联。
+// 重名设备绑定最小 id；名称已找不到（设备被删）的置 NULL 保留为失效引用。
+function migrateSceneActions() {
+  const cols = db.prepare('PRAGMA table_info(scene_actions)').all().map((c) => c.name)
+  if (cols.includes('device_id')) return
+  const rows = db.prepare('SELECT * FROM scene_actions').all()
+  const findByName = db.prepare('SELECT id FROM devices WHERE name=? ORDER BY id')
+  let dup = 0, lost = 0
+  db.exec('BEGIN')
+  try {
+    db.exec(`CREATE TABLE scene_actions_migrated (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scene_id INTEGER NOT NULL,
+      device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+      device_key TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL,
+      order_no INTEGER NOT NULL DEFAULT 0
+    )`)
+    const ins = db.prepare('INSERT INTO scene_actions_migrated (id,scene_id,device_id,device_key,action,order_no) VALUES (?,?,?,?,?,?)')
+    for (const r of rows) {
+      const m = findByName.all(r.device_key)
+      if (m.length > 1) dup++
+      if (!m.length) lost++
+      ins.run(r.id, r.scene_id, m.length ? m[0].id : null, r.device_key, r.action, r.order_no)
+    }
+    db.exec('DROP TABLE scene_actions')
+    db.exec('ALTER TABLE scene_actions_migrated RENAME TO scene_actions')
+    db.exec('COMMIT')
+  } catch (e) {
+    db.exec('ROLLBACK')
+    throw e
+  }
+  if (dup || lost) {
+    db.prepare('INSERT INTO device_logs (device_name,action,detail,time) VALUES (?,?,?,?)')
+      .run('系统', '迁移场景动作', `重名设备按最小ID绑定 ${dup} 条；失效引用 ${lost} 条（原设备已删除）`, new Date().toLocaleString('zh-CN'))
+  }
+}
+migrateSceneActions()
 
 // 初始化（仅首次）
 function seed() {
@@ -97,10 +137,11 @@ function seed() {
   const scId2 = si.run('离家模式', '外出时关闭灯光与耗电设备', 1).lastInsertRowid
   const scId3 = si.run('晚安模式', '睡前关闭灯光、开启安防', 0).lastInsertRowid
 
-  const ai = db.prepare('INSERT INTO scene_actions (scene_id,device_key,action,order_no) VALUES (?,?,?,?)')
-  ;[['客厅主灯', '开启'], ['客厅空调', '制冷26°C'], ['客厅传感器', '布防']].forEach((a, i) => ai.run(scId1, a[0], a[1], i))
-  ;[['客厅主灯', '关闭'], ['卧室吊灯', '关闭'], ['书房台灯', '关闭'], ['客厅空调', '关机'], ['玄关摄像头', '开启']].forEach((a, i) => ai.run(scId2, a[0], a[1], i))
-  ;[['卧室吊灯', '关闭'], ['客厅主灯', '关闭'], ['客厅摄像头', '布防'], ['卧室传感器', '布防']].forEach((a, i) => ai.run(scId3, a[0], a[1], i))
+  const ai = db.prepare('INSERT INTO scene_actions (scene_id,device_id,device_key,action,order_no) VALUES (?,?,?,?,?)')
+  const devId = (name) => db.prepare('SELECT id FROM devices WHERE name=?').get(name)?.id ?? null
+  ;[['客厅主灯', '开启'], ['客厅空调', '制冷26°C'], ['客厅传感器', '布防']].forEach((a, i) => ai.run(scId1, devId(a[0]), a[0], a[1], i))
+  ;[['客厅主灯', '关闭'], ['卧室吊灯', '关闭'], ['书房台灯', '关闭'], ['客厅空调', '关机'], ['玄关摄像头', '开启']].forEach((a, i) => ai.run(scId2, devId(a[0]), a[0], a[1], i))
+  ;[['卧室吊灯', '关闭'], ['客厅主灯', '关闭'], ['客厅摄像头', '布防'], ['卧室传感器', '布防']].forEach((a, i) => ai.run(scId3, devId(a[0]), a[0], a[1], i))
 
   // 能耗示例：近几小时部分设备用电
   const ei = db.prepare('INSERT INTO energy (device_name,room,kwh,hour) VALUES (?,?,?,?)')

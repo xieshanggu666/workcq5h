@@ -52,8 +52,10 @@ export const useHomeStore = defineStore('home', {
       await api('/device/' + id, 'DELETE'); await this.load()
     },
     async toggleDevice(id) {
-      const r = await api(`/device/${id}/toggle`, 'POST'); await this.load()
-      return r.power_on
+      try {
+        const r = await api(`/device/${id}/toggle`, 'POST'); await this.load()
+        return r.power_on
+      } catch (e) { this.toastMsg(e.message, 'warn') }
     },
     async updateDevice(id, patch) {
       await api(`/device/${id}/update`, 'POST', patch); await this.load()
@@ -68,9 +70,17 @@ export const useHomeStore = defineStore('home', {
       await api(`/scene/${id}/toggle`, 'POST'); await this.load()
     },
     async runScene(id) {
-      const r = await api(`/scene/${id}/run`, 'POST'); await this.load()
-      this.toastMsg('场景已触发执行', 'success')
-      return r.executed
+      try {
+        const r = await api(`/scene/${id}/run`, 'POST')
+        await this.load()
+        if (r.failed?.length)
+          this.toastMsg(`场景执行完成：成功 ${r.executed.length} 项，失败 ${r.failed.length} 项`, 'warn')
+        else
+          this.toastMsg(`场景已触发，成功执行 ${r.executed.length} 个动作`, 'success')
+        return r
+      } catch (e) {
+        this.toastMsg(e.message, 'warn')
+      }
     }
   }
 })
