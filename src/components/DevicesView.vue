@@ -68,7 +68,9 @@ function submit() {
   showAdd.value = false
 }
 async function remove(d) {
-  if (confirm(`删除设备「${d.name}」？`)) await store.removeDevice(d.id)
+  const usedBy = store.scenes.filter((s) => (s.actions || []).some((a) => a.device_id === d.id)).map((s) => `「${s.name}」`)
+  const tip = usedBy.length ? `\n⚠️ 场景 ${usedBy.join('、')} 中的相关动作将失效` : ''
+  if (confirm(`删除设备「${d.name}」？${tip}`)) await store.removeDevice(d.id)
 }
 </script>
 

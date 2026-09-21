@@ -36,8 +36,9 @@ CREATE TABLE IF NOT EXISTS scenes (
 );
 CREATE TABLE IF NOT EXISTS scene_actions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  scene_id INTEGER NOT NULL,
-  device_key TEXT NOT NULL,   -- 目标设备（名称或类型），演示用名称
+  scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+  device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,  -- 稳定关联；设备删除后置空=失效引用
+  device_key TEXT NOT NULL DEFAULT '',   -- 设备名快照：仅用于失效引用的展示
   action TEXT NOT NULL,       -- 如 开启/关闭/设为暖光
   order_no INTEGER NOT NULL DEFAULT 0
 );
@@ -56,6 +57,48 @@ CREATE TABLE IF NOT EXISTS energy (
   hour INTEGER NOT NULL    -- 0-23
 );
 `)
+
+// 旧库迁移：scene_actions 由「设备名引用」升级为「device_id 外键」
+// - 重名设备：按 id 最小者确定性解析，避免误控
+// - 设备已删除的动作：device_id 置 NULL（失效引用，保留记录供界面展示）
+function migrateSceneActions() {
+  const cols = db.prepare('PRAGMA table_info(scene_actions)').all()
+  if (cols.some((c) => c.name === 'device_id')) return // 已是新结构
+
+  const findByName = db.prepare('SELECT id FROM devices WHERE name=? ORDER BY id')
+  const sceneExists = db.prepare('SELECT 1 FROM scenes WHERE id=?')
+  db.exec('BEGIN')
+  try {
+    db.exec(`
+      CREATE TABLE scene_actions_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+        device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+        device_key TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL,
+        order_no INTEGER NOT NULL DEFAULT 0
+      )`)
+    const old = db.prepare('SELECT * FROM scene_actions').all()
+    const ins = db.prepare('INSERT INTO scene_actions_new (id,scene_id,device_id,device_key,action,order_no) VALUES (?,?,?,?,?,?)')
+    let linked = 0, ambiguous = 0, orphaned = 0, dropped = 0
+    for (const a of old) {
+      if (!sceneExists.get(a.scene_id)) { dropped++; continue } // 场景已删的孤儿动作直接丢弃
+      const matches = findByName.all(a.device_key)
+      if (matches.length > 1) ambiguous++
+      if (matches.length) linked++
+      else orphaned++
+      ins.run(a.id, a.scene_id, matches.length ? matches[0].id : null, a.device_key, a.action, a.order_no)
+    }
+    db.exec('DROP TABLE scene_actions')
+    db.exec('ALTER TABLE scene_actions_new RENAME TO scene_actions')
+    db.exec('COMMIT')
+    console.log(`[HOME] 场景动作迁移完成：共 ${old.length} 条 → 关联 ${linked}（其中重名按最小ID解析 ${ambiguous}），失效引用 ${orphaned}，丢弃孤儿 ${dropped}`)
+  } catch (e) {
+    db.exec('ROLLBACK')
+    throw e
+  }
+}
+migrateSceneActions()
 
 // 初始化（仅首次）
 function seed() {
@@ -97,10 +140,11 @@ function seed() {
   const scId2 = si.run('离家模式', '外出时关闭灯光与耗电设备', 1).lastInsertRowid
   const scId3 = si.run('晚安模式', '睡前关闭灯光、开启安防', 0).lastInsertRowid
 
-  const ai = db.prepare('INSERT INTO scene_actions (scene_id,device_key,action,order_no) VALUES (?,?,?,?)')
-  ;[['客厅主灯', '开启'], ['客厅空调', '制冷26°C'], ['客厅传感器', '布防']].forEach((a, i) => ai.run(scId1, a[0], a[1], i))
-  ;[['客厅主灯', '关闭'], ['卧室吊灯', '关闭'], ['书房台灯', '关闭'], ['客厅空调', '关机'], ['玄关摄像头', '开启']].forEach((a, i) => ai.run(scId2, a[0], a[1], i))
-  ;[['卧室吊灯', '关闭'], ['客厅主灯', '关闭'], ['客厅摄像头', '布防'], ['卧室传感器', '布防']].forEach((a, i) => ai.run(scId3, a[0], a[1], i))
+  const devId = (name) => db.prepare('SELECT id FROM devices WHERE name=?').get(name).id
+  const ai = db.prepare('INSERT INTO scene_actions (scene_id,device_id,device_key,action,order_no) VALUES (?,?,?,?,?)')
+  ;[['客厅主灯', '开启'], ['客厅空调', '制冷26°C'], ['客厅传感器', '布防']].forEach((a, i) => ai.run(scId1, devId(a[0]), a[0], a[1], i))
+  ;[['客厅主灯', '关闭'], ['卧室吊灯', '关闭'], ['书房台灯', '关闭'], ['客厅空调', '关机'], ['玄关摄像头', '开启']].forEach((a, i) => ai.run(scId2, devId(a[0]), a[0], a[1], i))
+  ;[['卧室吊灯', '关闭'], ['客厅主灯', '关闭'], ['客厅摄像头', '布防'], ['卧室传感器', '布防']].forEach((a, i) => ai.run(scId3, devId(a[0]), a[0], a[1], i))
 
   // 能耗示例：近几小时部分设备用电
   const ei = db.prepare('INSERT INTO energy (device_name,room,kwh,hour) VALUES (?,?,?,?)')

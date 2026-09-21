@@ -49,14 +49,16 @@ export const useHomeStore = defineStore('home', {
       catch (e) { this.toastMsg(e.message, 'warn') }
     },
     async removeDevice(id) {
-      await api('/device/' + id, 'DELETE'); await this.load()
+      const r = await api('/device/' + id, 'DELETE'); await this.load()
+      if (r.affected_actions) this.toastMsg(`设备已删除，${r.affected_actions} 个场景动作已失效`, 'warn')
     },
     async toggleDevice(id) {
       const r = await api(`/device/${id}/toggle`, 'POST'); await this.load()
       return r.power_on
     },
     async updateDevice(id, patch) {
-      await api(`/device/${id}/update`, 'POST', patch); await this.load()
+      try { await api(`/device/${id}/update`, 'POST', patch); await this.load() }
+      catch (e) { this.toastMsg(e.message, 'warn') }
     },
     async addScene(scene) {
       const r = await api('/scene', 'POST', scene); await this.load(); this.toastMsg('场景已创建', 'success'); return r.id
@@ -69,8 +71,17 @@ export const useHomeStore = defineStore('home', {
     },
     async runScene(id) {
       const r = await api(`/scene/${id}/run`, 'POST'); await this.load()
-      this.toastMsg('场景已触发执行', 'success')
-      return r.executed
+      const okN = r.executed?.length || 0
+      const failN = r.failed?.length || 0
+      if (failN) {
+        const reasons = r.failed.map((f) => `${f.device}：${f.reason}`).join('；')
+        this.toastMsg(`场景执行完成：${okN} 成功 / ${failN} 失败（${reasons}）`, 'warn')
+      } else if (okN) {
+        this.toastMsg(`场景已触发，${okN} 个动作全部执行成功`, 'success')
+      } else {
+        this.toastMsg('场景没有可执行的动作', 'info')
+      }
+      return r
     }
   }
 })

@@ -10,13 +10,13 @@
       <input v-model="sceneForm.name" placeholder="场景名称，如 观影模式" required />
       <p class="hint">为场景添加「设备 → 动作」步骤：</p>
       <div class="step" v-for="(s,i) in sceneForm.actions" :key="i">
-        <select v-model="s.device">
-          <option v-for="d in store.devices" :key="d.id" :value="d.name">{{ d.type_icon }} {{ d.name }}</option>
+        <select v-model="s.device_id">
+          <option v-for="d in store.devices" :key="d.id" :value="d.id">{{ d.type_icon }} {{ d.name }}</option>
         </select>
         <select v-model="s.action"><option>开启</option><option>关闭</option><option>调节亮度</option><option>布防</option><option>启动</option></select>
         <button type="button" class="rm" @click="sceneForm.actions.splice(i,1)">✕</button>
       </div>
-      <button type="button" class="ghost" @click="sceneForm.actions.push({device:store.devices[0]?.name||'',action:'开启'})">＋ 添加步骤</button>
+      <button type="button" class="ghost" @click="sceneForm.actions.push({device_id:store.devices[0]?.id??null,action:'开启'})">＋ 添加步骤</button>
       <div class="btns">
         <button type="submit" class="save">保存场景</button>
         <button type="button" class="ghost" @click="showBuilder=false">取消</button>
@@ -34,11 +34,11 @@
           <span class="badge" :class="s.enabled?'on':'off'">{{ s.enabled?'已启用':'已停用' }}</span>
         </div>
         <div class="actions">
-          <div v-for="(a,i) in parseActions(s.actions)" :key="i" class="act-chip">
-            <span class="k">{{ a[0] }}</span>
-            <span class="v">{{ a[1] }}</span>
+          <div v-for="a in s.actions" :key="a.id" class="act-chip" :class="{bad:!a.valid}">
+            <span class="k">{{ a.valid ? a.device_name : (a.device_key || '未知设备') + '（已删除）' }}</span>
+            <span class="v">{{ a.action }}</span>
           </div>
-          <span v-if="!parseActions(s.actions).length" class="noact">无动作</span>
+          <span v-if="!s.actions.length" class="noact">无动作</span>
         </div>
         <div class="btns">
           <button class="run" :disabled="!s.enabled" @click="store.runScene(s.id)">▶ 触发</button>
@@ -66,10 +66,6 @@ function create() {
 async function remove(s) {
   if (confirm(`删除场景「${s.name}」？`)) await store.deleteScene(s.id)
 }
-function parseActions(str) {
-  if (!str) return []
-  return String(str).split(';').map((s) => s.split('|')).filter((a) => a.length === 2)
-}
 </script>
 
 <style scoped>
@@ -96,6 +92,8 @@ input,select,button{font-family:inherit;background:#13233f;border:1px solid rgba
 .act-chip{background:#16263f;border:1px solid rgba(120,160,220,0.12);border-radius:7px;font-size:11px;overflow:hidden;display:flex;}
 .act-chip .k{padding:4px 6px;color:#90caf9;border-right:1px solid rgba(120,160,220,0.15);}
 .act-chip .v{padding:4px 8px;color:#dbe4f3;}
+.act-chip.bad{border-color:rgba(239,83,80,0.45);}
+.act-chip.bad .k{color:#ef9a9a;}
 .noact{color:#5b6f94;font-size:12px;padding:4px 0;}
 .run{background:linear-gradient(135deg,#43a047,#2e7d32);border:none;color:#fff;font-weight:600;cursor:pointer;}
 .run:disabled{background:#243357;color:#6f84ab;cursor:not-allowed;}
